@@ -2986,21 +2986,25 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 
 
 
-	if (timeout &&
+	if (unlikely(timeout &&
 	    poll_select_set_timeout(&end_time, timeout->tv_sec,
-				    timeout->tv_nsec))
+				    timeout->tv_nsec)))
 		return -EINVAL;
 
 	datagrams = 0;
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
-	if (!sock)
+	if (unlikely(!sock))
 		return err;
 	
 	//if (sock->cmmsghdr.present && mmsg != NULL) {
 	//	printk("Invocation of recvmmsg with mmsghdr while remembering");
 	//	return -EINVAL;
 	//}
+	
+	if (sock->cmmsghdr.present && sock->cmmsghdr.vlen != vlen) {
+		return -EINVAL;
+	}
 
 	if (likely(!(flags & MSG_ERRQUEUE))) {
 		err = sock_error(sock->sk);
@@ -3013,11 +3017,11 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 	entry = mmsg;
 	compat_entry = (struct compat_mmsghdr __user *)mmsg;
 
-	while (datagrams < vlen) {
+	while (likely(datagrams < vlen)) {
 		/*
 		 * No need to ask LSM for more than the first datagram.
 		 */
-		if (MSG_CMSG_COMPAT & flags) {
+		if (unlikely(MSG_CMSG_COMPAT & flags)) {
 			err = ___sys_recvmsg(sock, (struct user_msghdr __user *)compat_entry,
 					     &msg_sys, flags & ~MSG_WAITFORONE,
 					     datagrams);
@@ -3099,24 +3103,24 @@ int __sys_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 	int datagrams;
 	struct timespec64 timeout_sys;
 
-	if (timeout && get_timespec64(&timeout_sys, timeout))
+	if (unlikely(timeout && get_timespec64(&timeout_sys, timeout)))
 		return -EFAULT;
 
-	if (timeout32 && get_old_timespec32(&timeout_sys, timeout32))
+	if (unlikely(timeout32 && get_old_timespec32(&timeout_sys, timeout32)))
 		return -EFAULT;
 
-	if (!timeout && !timeout32)
+	if (likely(!timeout && !timeout32))
 		return do_recvmmsg(fd, mmsg, vlen, flags, NULL);
 
 	datagrams = do_recvmmsg(fd, mmsg, vlen, flags, &timeout_sys);
 
-	if (datagrams <= 0)
+	if (unlikely(datagrams <= 0))
 		return datagrams;
 
-	if (timeout && put_timespec64(&timeout_sys, timeout))
+	if (unlikely(timeout && put_timespec64(&timeout_sys, timeout)))
 		datagrams = -EFAULT;
 
-	if (timeout32 && put_old_timespec32(&timeout_sys, timeout32))
+	if (unlikely(timeout32 && put_old_timespec32(&timeout_sys, timeout32)))
 		datagrams = -EFAULT;
 
 	return datagrams;
@@ -3126,7 +3130,7 @@ SYSCALL_DEFINE5(recvmmsg, int, fd, struct mmsghdr __user *, mmsg,
 		unsigned int, vlen, unsigned int, flags,
 		struct __kernel_timespec __user *, timeout)
 {
-	if (flags & MSG_CMSG_COMPAT)
+	if (unlikely(flags & MSG_CMSG_COMPAT))
 		return -EINVAL;
 
 	return __sys_recvmmsg(fd, mmsg, vlen, flags, timeout, NULL);
