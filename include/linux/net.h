@@ -104,6 +104,14 @@ struct socket_wq {
 	struct rcu_head		rcu;
 } ____cacheline_aligned_in_smp;
 
+struct mmsghdr_state {
+	short present;
+	struct mmsghdr* address;
+	struct sockaddr** uaddrs;
+	struct iovec** iovecs;
+	unsigned int vlen;
+};
+
 /**
  *  struct socket - general BSD socket
  *  @state: socket state (%SS_CONNECTED, etc)
@@ -126,6 +134,8 @@ struct socket {
 	const struct proto_ops	*ops; /* Might change with IPV6_ADDRFORM or MPTCP. */
 
 	struct socket_wq	wq;
+
+	struct mmsghdr_state	cmmsghdr;
 };
 
 /*

@@ -250,8 +250,9 @@ int move_addr_to_kernel(void __user *uaddr, int ulen, struct sockaddr_storage *k
 		return -EINVAL;
 	if (ulen == 0)
 		return 0;
-	if (copy_from_user(kaddr, uaddr, ulen))
+	if (copy_from_user(kaddr, uaddr, ulen)) {
 		return -EFAULT;
+	}
 	return audit_sockaddr(ulen, kaddr);
 }
 
@@ -1712,6 +1713,9 @@ int __sys_socket(int family, int type, int protocol)
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 
+	sock->cmmsghdr.present = 0;
+	sock->cmmsghdr.address = (void*) 0;
+
 	return sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 }
 
@@ -2516,6 +2520,7 @@ int __copy_msghdr(struct msghdr *kmsg,
 	return 0;
 }
 
+
 static int copy_msghdr_from_user(struct msghdr *kmsg,
 				 struct user_msghdr __user *umsg,
 				 struct sockaddr __user **save_addr,
@@ -2843,21 +2848,86 @@ out:
 	return err;
 }
 
+SYSCALL_DEFINE4(remember_mmsghdr, int, fd, struct mmsghdr __user *, mmsg, 
+		unsigned int, vlen, unsigned int, flags) 
+{
+	struct socket* sock;
+	int sockerr;
+	
+	sock = sockfd_lookup(fd, &sockerr);
+
+	if (!sock) {
+		return -1;
+	}
+
+	if (sock->cmmsghdr.present) {
+		return -1;
+	}
+
+	sock->cmmsghdr.address = kmalloc(sizeof(struct mmsghdr) * vlen * 2, GFP_KERNEL);
+	if(sock->cmmsghdr.address == NULL) {
+		return -ENOMEM;
+	}
+
+	sock->cmmsghdr.iovecs = kmalloc(sizeof(struct iovec**) * vlen, GFP_KERNEL);
+	if(sock->cmmsghdr.iovecs == NULL) {
+		return -ENOMEM;
+	}
+	
+	sock->cmmsghdr.uaddrs = kmalloc(sizeof(struct sockaddr *) * vlen, GFP_KERNEL);
+	if(sock->cmmsghdr.uaddrs == NULL) {
+		return -ENOMEM;
+	}
+
+	struct msghdr *kmsg = (struct msghdr*) sock->cmmsghdr.address;
+	struct mmsghdr __user *entry = (struct mmsghdr __user *) mmsg;
+	ssize_t err;
+
+	for(unsigned int i = 0; i < vlen; i++) {
+		struct iovec *iovstack = kmalloc(UIO_FASTIOV * sizeof(struct iovec), GFP_KERNEL);
+		sock->cmmsghdr.iovecs[i] = iovstack;
+		if(sock->cmmsghdr.iovecs[i] == NULL) {
+			return -ENOMEM;
+		}
+
+		err = recvmsg_copy_msghdr(kmsg, (struct user_msghdr __user*) entry, flags, &sock->cmmsghdr.uaddrs[i], &iovstack);
+
+		if (err < 0) 
+			return err;
+
+		++entry;
+		++kmsg;
+	}
+
+	sock->cmmsghdr.vlen = vlen;
+	sock->cmmsghdr.present = 1;
+
+	return 0;
+}
+
 static int ___sys_recvmsg(struct socket *sock, struct user_msghdr __user *msg,
 			 struct msghdr *msg_sys, unsigned int flags, int nosec)
 {
-	struct iovec iovstack[UIO_FASTIOV], *iov = iovstack;
 	/* user mode address pointers */
 	struct sockaddr __user *uaddr;
 	ssize_t err;
 
-	err = recvmsg_copy_msghdr(msg_sys, msg, flags, &uaddr, &iov);
-	if (err < 0)
-		return err;
+	if (sock->cmmsghdr.present) {
+		msg_sys = (struct msghdr*) (sock->cmmsghdr.address); 
+		msg_sys += nosec;
+		uaddr = sock->cmmsghdr.uaddrs[nosec];
+		err = ____sys_recvmsg(sock, msg_sys, msg, uaddr, flags, nosec);
 
-	err = ____sys_recvmsg(sock, msg_sys, msg, uaddr, flags, nosec);
-	kfree(iov);
-	return err;
+		return err;
+	} else {
+		struct iovec iovstack[UIO_FASTIOV], *iov = iovstack;
+		err = recvmsg_copy_msghdr(msg_sys, msg, flags, &uaddr, &iov);
+		if (err < 0)
+			return err;
+		err = ____sys_recvmsg(sock, msg_sys, msg, uaddr, flags, nosec);
+		kfree(iov);
+		return err;
+	}
 }
 
 /*
@@ -2914,6 +2984,8 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 	struct timespec64 end_time;
 	struct timespec64 timeout64;
 
+
+
 	if (timeout &&
 	    poll_select_set_timeout(&end_time, timeout->tv_sec,
 				    timeout->tv_nsec))
@@ -2924,6 +2996,11 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		return err;
+	
+	//if (sock->cmmsghdr.present && mmsg != NULL) {
+	//	printk("Invocation of recvmmsg with mmsghdr while remembering");
+	//	return -EINVAL;
+	//}
 
 	if (likely(!(flags & MSG_ERRQUEUE))) {
 		err = sock_error(sock->sk);
@@ -2961,6 +3038,7 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 
 		if (err)
 			break;
+	
 		++datagrams;
 
 		/* MSG_WAITFORONE turns on MSG_DONTWAIT after one packet */
