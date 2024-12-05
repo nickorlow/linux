@@ -2815,14 +2815,17 @@ static int ____sys_recvmsg(struct socket *sock, struct msghdr *msg_sys,
 	if (sock->file->f_flags & O_NONBLOCK)
 		flags |= MSG_DONTWAIT;
 
-	if (unlikely(nosec))
+	if (likely(nosec))
 		err = sock_recvmsg_nosec(sock, msg_sys, flags);
 	else
 		err = sock_recvmsg(sock, msg_sys, flags);
 
-	if (err < 0)
+	if (unlikely(err < 0))
 		goto out;
 	len = err;
+
+//	if(sock->cmmsghdr.present)
+//		msg_sys->msg_iter.count = 128;
 
 	if (uaddr != NULL) {
 		err = move_addr_to_user(&addr,
@@ -2835,7 +2838,7 @@ static int ____sys_recvmsg(struct socket *sock, struct msghdr *msg_sys,
 			 COMPAT_FLAGS(msg));
 	if (err)
 		goto out;
-	if (MSG_CMSG_COMPAT & flags)
+	if (unlikely(MSG_CMSG_COMPAT & flags))
 		err = __put_user((unsigned long)msg_sys->msg_control - cmsg_ptr,
 				 &msg_compat->msg_controllen);
 	else
@@ -2913,10 +2916,24 @@ static int ___sys_recvmsg(struct socket *sock, struct user_msghdr __user *msg,
 	ssize_t err;
 
 	if (sock->cmmsghdr.present) {
+
 		msg_sys = (struct msghdr*) (sock->cmmsghdr.address); 
 		msg_sys += nosec;
 		uaddr = sock->cmmsghdr.uaddrs[nosec];
+
+		struct iov_iter_state state;
+		struct iov_iter *iter = &msg_sys->msg_iter;
+
+
+		iov_iter_save_state(&msg_sys->msg_iter, &state);
+
+
+
 		err = ____sys_recvmsg(sock, msg_sys, msg, uaddr, flags, nosec);
+		
+		iter->iov_offset = state.iov_offset;
+		iter->count = state.count;
+		iter->nr_segs = state.nr_segs;
 
 		return err;
 	} else {

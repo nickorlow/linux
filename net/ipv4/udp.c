@@ -1729,12 +1729,14 @@ struct sk_buff *__skb_recv_udp(struct sock *sk, unsigned int flags,
 
 		error = -EAGAIN;
 		do {
+
 			spin_lock_bh(&queue->lock);
 			skb = __skb_try_recv_from_queue(sk, queue, flags, off,
 							err, &last);
 			if (skb) {
 				if (!(flags & MSG_PEEK))
 					udp_skb_destructor(sk, skb);
+
 				spin_unlock_bh(&queue->lock);
 				return skb;
 			}
