@@ -3034,7 +3034,7 @@ static int do_recvmmsg(int fd, struct mmsghdr __user *mmsg,
 	entry = mmsg;
 	compat_entry = (struct compat_mmsghdr __user *)mmsg;
 
-	while (likely(datagrams < vlen)) {
+	while (datagrams < vlen) {
 		/*
 		 * No need to ask LSM for more than the first datagram.
 		 */
